@@ -1,33 +1,63 @@
 from langchain.agents import create_agent
-from langchain_openai import ChatOpenAI
-from langchain_mistralai import ChatMistralAI
+from langchain_groq import ChatGroq
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from tools import web_search, scrape_url
 from dotenv import load_dotenv
 import os
+from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception_type
+import httpx
 
 load_dotenv()
 
-llm = ChatMistralAI(
-    model="mistral-large-latest",
+
+@retry(
+    wait=wait_exponential(min=4, max=60),
+    stop=stop_after_attempt(5),
+    retry=retry_if_exception_type(httpx.HTTPStatusError)
+)
+def _invoke_with_retry(runnable, *args, **kwargs):
+    return runnable.invoke(*args, **kwargs)
+
+
+llm = ChatGroq(
+    model="llama-3.1-70b-versatile",
     temperature=0,
-    api_key=os.getenv("MISTRAL_API_KEY")
+    api_key=os.getenv("GROQ_API_KEY"),
+    max_retries=2
 )
 
 
 def build_search_agent():
-    return create_agent(
+    agent = create_agent(
         model=llm,
         tools=[web_search]
     )
 
+    class RetryAgent:
+        def __init__(self, a):
+            self.a = a
+
+        def invoke(self, *args, **kwargs):
+            return _invoke_with_retry(self.a, *args, **kwargs)
+
+    return RetryAgent(agent)
+
 
 def build_reader_agent():
-    return create_agent(
+    agent = create_agent(
         model=llm,
         tools=[scrape_url]
     )
+
+    class RetryAgent:
+        def __init__(self, a):
+            self.a = a
+
+        def invoke(self, *args, **kwargs):
+            return _invoke_with_retry(self.a, *args, **kwargs)
+
+    return RetryAgent(agent)
 
 
 writer_prompt = ChatPromptTemplate.from_messages([
@@ -48,7 +78,16 @@ Structure the report as:
 Be detailed, factual and professional."""),
 ])
 
-writer_chain = writer_prompt | llm | StrOutputParser()
+
+class RetryChain:
+    def __init__(self, chain):
+        self.chain = chain
+
+    def invoke(self, *args, **kwargs):
+        return _invoke_with_retry(self.chain, *args, **kwargs)
+
+
+writer_chain = RetryChain(writer_prompt | llm | StrOutputParser())
 
 
 critic_prompt = ChatPromptTemplate.from_messages([
@@ -74,4 +113,4 @@ One line verdict:
 ..."""),
 ])
 
-critic_chain = critic_prompt | llm | StrOutputParser()
+critic_chain = RetryChain(critic_prompt | llm | StrOutputParser())

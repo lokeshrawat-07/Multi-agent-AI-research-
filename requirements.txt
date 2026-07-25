@@ -9,6 +9,7 @@ langchain-community>=0.2.0
 langchain-openai>=0.1.0
 langchain-xai>=0.1.0   # For Grok (xAI API)
 langchain-mistralai
+langchain-groq>=0.1.0
 
 # LCEL / Runnable support
 
